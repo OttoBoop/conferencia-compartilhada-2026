@@ -25,7 +25,7 @@
     importReview:async file=>{const wrapper=JSON.parse(await file.text());if(wrapper.format!=='revisoes-criptografadas-v1'||typeof wrapper.payload!=='string')throw new Error('Use um arquivo de revisões protegidas exportado por esta consulta.');try{return JSON.parse(dec.decode(await openCipher(asBytes(wrapper.payload),'revisoes:'+data.dataset_id)));}catch(e){throw new Error('Senha/base diferente ou arquivo alterado.');}},
     lock:()=>{for(const url of urls.values())URL.revokeObjectURL(url);urls.clear();key=null;location.reload();}
    };
-   const parsed=new DOMParser().parseFromString(html,'text/html');document.body.classList.remove('locked');document.body.replaceChildren(...parsed.body.childNodes);document.title=parsed.title;await script('revisao.js');await script('painel.js');
+   const parsed=new DOMParser().parseFromString(html,'text/html');document.body.classList.remove('locked');document.body.replaceChildren(...parsed.body.childNodes);document.title=parsed.title;await script('revisao.js');await script('painel.js');await script('despacho.js');
   }catch(e){key=null;if(error.isConnected){error.textContent='Não foi possível abrir. Confira a senha e tente novamente.';button.disabled=false;button.textContent='Abrir conferência';}else{document.body.textContent='Falha ao abrir a interface. Recarregue a página e tente novamente.';}}
  });
 })();
