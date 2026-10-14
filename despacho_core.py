@@ -64,6 +64,16 @@ def listed_descriptions(rows):
     return ', '.join(names[:4]) + (' e demais lançamentos descritos no relatório' if len(names) > 4 else '')
 
 
+def preliminary_value(row, states):
+    """Valor de referência da leitura visual; jamais equivale a admissão."""
+    review = states.get(row['id']) or {}
+    if (row['resultado'] != 'Correspondência demonstrada' or review.get('erro')
+            or review.get('_conflict') or review.get('valor_centavos') not in
+            (None, row['relatorio']['valor_centavos'])):
+        return None
+    return row['relatorio']['valor_centavos']
+
+
 def is_general_issue(text):
     lower = text.casefold()
     return not any(fragment in lower for fragment in (
@@ -154,6 +164,13 @@ def build(process, states):
         policy = states.get(f'month:{code}:{iso}') or {}
         printed = report.get('total_impresso_centavos')
         line_sum = sum(r['relatorio']['valor_centavos'] for r in rows)
+        preliminary_rows = [(r, preliminary_value(r, states)) for r in rows]
+        preliminary_matched = sum(value for _, value in preliminary_rows if value is not None)
+        preliminary_count = sum(value is not None for _, value in preliminary_rows)
+        preliminary_clear = sum(value for row, value in preliminary_rows
+                                if value is not None and not (row.get('achado') or {}).get('campos_duvida'))
+        preliminary_clear_count = sum(value is not None and not (row.get('achado') or {}).get('campos_duvida')
+                                      for row, value in preliminary_rows)
         working = sum((states.get(r['id']) or {}).get('valor_centavos')
                       if (states.get(r['id']) or {}).get('valor_centavos') is not None
                       else r['relatorio']['valor_centavos'] for r in rows)
@@ -205,6 +222,10 @@ def build(process, states):
         if reported_limit is not None:
             notes.append(f'o limite informado no relatório é {reais(reported_limit)} e o excesso aritmético sobre ele é {reais(max(0, line_sum - reported_limit))}')
         notes.append(f'os lançamentos estão descritos no relatório como {listed_descriptions(rows)}')
+        notes.append(f'a leitura visual demonstrou correspondência documental em {preliminary_count} lançamentos, '
+                     f'no valor de {reais(preliminary_matched)}, dos quais {preliminary_clear_count} '
+                     f'({reais(preliminary_clear)}) sem dúvida específica registrada; '
+                     'essa prévia não constitui admissão ao benefício')
         plural = 'apontamento individualizado' if len(month_issues) == 1 else 'apontamentos individualizados'
         notes.append(f'a conferência registrou {len(month_issues)} {plural} no quadro deste despacho' + (f', sobre {type_text}' if type_text else ''))
         if confirmed_limit is None:
@@ -216,6 +237,8 @@ def build(process, states):
         by_month.append({
             'month': iso, 'label': mes(iso), 'printed': printed, 'line_sum': line_sum,
             'working': working, 'reported_limit': reported_limit,
+            'preliminary_matched': preliminary_matched, 'preliminary_count': preliminary_count,
+            'preliminary_clear': preliminary_clear, 'preliminary_clear_count': preliminary_clear_count,
             'confirmed_limit': confirmed_limit, 'limit_source': policy.get('fonte') or '',
             'reported_excess': None if reported_limit is None else max(0, line_sum - reported_limit),
             'admitted': admitted if admitted_ready else None,
@@ -236,6 +259,8 @@ def build(process, states):
     total_printed = sum(m['printed'] or 0 for m in by_month)
     total_lines = sum(m['line_sum'] for m in by_month)
     total_working = sum(m['working'] for m in by_month)
+    total_preliminary = sum(m['preliminary_matched'] for m in by_month)
+    total_preliminary_clear = sum(m['preliminary_clear'] for m in by_month)
     reported_excess = sum(m['reported_excess'] or 0 for m in by_month)
     total_proposed = sum(m['proposed'] for m in by_month) if all(m['proposed'] is not None for m in by_month) else None
     conclusion = (states.get('conclusion:' + code) or {}).get('tipo') or 'diligencia'
@@ -254,6 +279,7 @@ def build(process, states):
                       'Cada registro informa a divergência ou dúvida, a providência necessária e as páginas dos documentos.')
     consolidation = (f'No período analisado, os totais impressos nos relatórios somam {reais(total_printed)} e a soma dos lançamentos é {reais(total_lines)}. '
                      f'O valor de trabalho, consideradas as revisões registradas, é {reais(total_working)}. '
+                     f'A prévia de correspondência documental soma {reais(total_preliminary)}, dos quais {reais(total_preliminary_clear)} sem dúvida específica registrada; ela não representa valor admitido. '
                      f'O excesso aritmético sobre os limites informados, calculado mês a mês, soma {reais(reported_excess)}; '
                      'esse excesso não é uma glosa adicional às despesas excluídas. ')
     consolidation += (f'A soma dos valores propostos por mês é {reais(total_proposed)}.' if total_proposed is not None
@@ -296,7 +322,9 @@ def build(process, states):
             'cnpj': cnpj, 'periodo': period, 'conclusion': conclusion,
             'months': by_month, 'issues': issues, 'blocks': blocks,
             'totals': {'printed': total_printed, 'lines': total_lines,
-                       'working': total_working, 'reported_excess': reported_excess,
+                       'working': total_working, 'preliminary_matched': total_preliminary,
+                       'preliminary_clear': total_preliminary_clear,
+                       'reported_excess': reported_excess,
                        'proposed': total_proposed},
             'warnings': list(dict.fromkeys(warnings)),
             'payout_ready': payout_ready and not any(block['stale'] for block in blocks)}
