@@ -24,7 +24,7 @@ window.REVISAO=(()=>{
   if(id.startsWith('month:'))return {limite_centavos:cents(v.limite_centavos),fonte:text(v.fonte,1000)};
   if(id.startsWith('admission:')){
    if(!['','admitida','excluida'].includes(v.status))throw new Error('Situação de admissão inválida.');
-   return {status:v.status,valor_centavos:cents(v.valor_centavos),fundamento:text(v.fundamento,3000)};
+   return {status:v.status,valor_centavos:cents(v.valor_centavos),valor_base_centavos:v.valor_base_centavos===undefined?null:cents(v.valor_base_centavos),fundamento:text(v.fundamento,3000)};
   }
   if(id.startsWith('finding:')||id.startsWith('general:')){
    if(!['pendente','resolvida','ressalva'].includes(v.situacao)||!Array.isArray(v.categorias)||v.categorias.length>8||v.categorias.some(x=>typeof x!=='string'||x.length>60))throw new Error('Tratamento do apontamento inválido.');

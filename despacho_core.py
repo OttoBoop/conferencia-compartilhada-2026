@@ -74,15 +74,112 @@ def preliminary_value(row, states):
     return row['relatorio']['valor_centavos']
 
 
+def review_signal(row, states, issue=None):
+    """Prepara a fila de revisão sem presumir elegibilidade ou pagamento."""
+    finding = row.get('achado') or {}
+    review = states.get(row['id']) or {}
+    admission = states.get('admission:' + row['id']) or {}
+    value = preliminary_value(row, states)
+    if review.get('erro') or (review.get('valor_centavos') not in
+                              (None, row['relatorio']['valor_centavos'])):
+        level, label = 'divergencia', 'Valor ou erro alterado na revisão'
+    elif row['resultado'] == 'Divergência demonstrada':
+        level, label = 'divergencia', 'Divergência documentada'
+    elif row['resultado'] == 'Conferência inconclusiva':
+        level, label = 'inconclusiva', 'Conferência inconclusiva'
+    elif finding.get('campos_duvida'):
+        level, label = 'com_pendencias', 'Valores conciliados; dúvida a resolver'
+    else:
+        level, label = 'checagem_direta', 'Correspondência visual sem dúvida específica'
+    issue_done = issue is None or (issue['status'] != 'pendente' and bool(issue['resolution'].strip()))
+    work_value = review.get('valor_centavos')
+    if work_value is None:
+        work_value = row['relatorio']['valor_centavos']
+    amount_done = (admission.get('status') in ('admitida', 'excluida')
+                   and isinstance(admission.get('valor_centavos'), int)
+                   and 0 <= admission['valor_centavos'] <= work_value
+                   and (admission.get('status') != 'excluida' or admission['valor_centavos'] == 0)
+                   and bool(admission.get('fundamento', '').strip()))
+    admission_stale = ((admission.get('valor_base_centavos') is not None
+                        and admission['valor_base_centavos'] != work_value)
+                       or (admission.get('valor_base_centavos') is None
+                           and review.get('valor_centavos') is not None
+                           and review.get('at') and admission.get('at') and review['at'] > admission['at']))
+    reviewed = bool(review.get('conferido') and amount_done and issue_done and not review.get('_conflict')
+                    and not admission.get('_conflict') and not admission_stale)
+    return {
+        'id': row['id'], 'month': row['relatorio']['mes'], 'level': level, 'label': label,
+        'reference_amount': value, 'declared_amount': row['relatorio']['valor_centavos'],
+        'document_amount': row['documento'].get('valor_centavos'),
+        'payment_amount': row['pagamento'].get('alocado_centavos'),
+        'description': row['relatorio']['descricao'],
+        'reason': finding.get('resumo') or row.get('comparacao') or row['resultado'],
+        'next_step': finding.get('proximo_passo') or 'Conferir os documentos indicados.',
+        'report_pages': row['relatorio'].get('paginas') or [],
+        'document_pages': row['documento'].get('paginas') or [],
+        'payment_pages': row['pagamento'].get('paginas') or [],
+        'reviewed': reviewed,
+        'value_checked': bool(review.get('conferido')),
+        'admission_decided': amount_done,
+        'issue_resolved': issue_done,
+    }
+
+
 def is_general_issue(text):
     lower = text.casefold()
+    if ('instrumento individual' in lower or 'termo 03/2024' in lower) and (
+            'não' in lower or 'ausente' in lower or 'não foi localizado' in lower):
+        return True
     return not any(fragment in lower for fragment in (
         'autenticidade externa', 'não houve consulta externa', 'não foram consultad',
         'não foi consultad', 'páginas 47 e 82', 'páginas 38,74',
         'página 28 em branco', 'revisão abrange apenas arquivos',
         'imagens e documentos do pdf foram lidos', 'todas as 106 páginas',
         'todas as 114 páginas', 'conferência visual das peças',
+        'cnpj de filial emitente e matriz recebedora',
+        'o comprovante bitway das páginas 18 e 54',
+        'extratos identificamconta pagadora e nomes recebedores',
+        'páginas 1–30 são atualização cadastral',
     ))
+
+
+def general_issue_title(text):
+    lower = text.casefold()
+    if 'certidões' in lower or 'validades individuais' in lower:
+        return 'Validade das certidões'
+    if 'ids/autenticações repetidos' in lower or 'identificadores repetidos' in lower:
+        return 'Identificadores bancários repetidos'
+    if 'mapa ainda não emitido' in lower:
+        return 'Condição operacional e registro MAPA'
+    if 'água' in lower and ('pagador' in lower or 'terceiro' in lower):
+        return 'Pagamento de água por terceiro'
+    if 'cpf do titular' in lower or 'notas/cupons em cpf' in lower:
+        return 'Titular das notas e vínculo com beneficiária'
+    if 'limite muda' in lower:
+        return 'Variação do limite mensal'
+    if 'cabeçalho dos relatórios' in lower and 'corpo e documentos' in lower:
+        return 'Identidade cadastral e CNPJ'
+    if 'cnpj' in lower and ('cabeçalho' in lower or 'cadastro' in lower):
+        return 'Identidade cadastral e CNPJ'
+    if 'instrumento individual' in lower or 'termo 03/2024' in lower or 'termo 01/2024' in lower:
+        return 'Instrumento individual, vigência e limite'
+    if 'aluguéis' in lower or 'aluguel' in lower and ('contrato' in lower or 'pix' in lower):
+        return 'Documento da locação e competência'
+    if 'créditos municipais' in lower or 'repasses' in lower:
+        return 'Histórico de repasses'
+    if 'endereço' in lower or 'rua da carioca' in lower:
+        return 'Identificação do imóvel'
+    if 'desconsiderar' in lower or 'encaminhamento' in lower:
+        return 'Encaminhamento no SEI'
+    if '20269' in lower or 'início' in lower:
+        return 'Período informado no relatório'
+    if 'legível' in lower or 'nítida' in lower or 'não foi lido' in lower:
+        return 'Campo documental a confirmar'
+    if 'métrica' in lower or 'metragem' in lower or 'm²' in lower:
+        return 'Metragem e limite'
+    if 'terceiro' in lower or 'titular' in lower or 'pagador' in lower:
+        return 'Vínculo de pagamento'
+    return 'Condição do processo a esclarecer'
 
 
 def issue_rows(process, states):
@@ -133,7 +230,7 @@ def issue_rows(process, states):
         revised = states.get(ident) or {}
         result.append({
             'id': ident, 'month': None, 'description': 'Questão geral do processo',
-            'title': revised.get('titulo') or 'Condição do processo',
+            'title': revised.get('titulo') or general_issue_title(text),
             'summary': revised.get('resumo') or text,
             'next_step': revised.get('providencia') or 'Confirmar nos autos e registrar o fundamento.',
             'categories': revised.get('categorias') or category(text),
@@ -156,6 +253,9 @@ def build(process, states):
     period = identity.get('periodo') or process['periodo']
     act = identity.get('ato') or ACT
     issues = issue_rows(process, states)
+    issue_by_id = {item['id']: item for item in issues if item['kind'] == 'expense'}
+    signals = [review_signal(row, states, issue_by_id.get(row['id'])) for row in process['despesas']]
+    signal_by_id = {item['id']: item for item in signals}
     by_month = []
     warnings = []
     for report in process['meses']:
@@ -165,6 +265,8 @@ def build(process, states):
         printed = report.get('total_impresso_centavos')
         line_sum = sum(r['relatorio']['valor_centavos'] for r in rows)
         preliminary_rows = [(r, preliminary_value(r, states)) for r in rows]
+        month_signals = [signal_by_id[r['id']] for r in rows]
+        signal_counts = Counter(item['level'] for item in month_signals)
         preliminary_matched = sum(value for _, value in preliminary_rows if value is not None)
         preliminary_count = sum(value is not None for _, value in preliminary_rows)
         preliminary_clear = sum(value for row, value in preliminary_rows
@@ -189,7 +291,15 @@ def build(process, states):
                 unchecked += 1
             if expense_review.get('erro'):
                 flagged += 1
-            if expense_review.get('at') and value.get('at') and expense_review['at'] > value['at']:
+            changed_since_admission = ((value.get('valor_base_centavos') is not None
+                                        and value['valor_base_centavos'] !=
+                                        (expense_review.get('valor_centavos') if expense_review.get('valor_centavos') is not None
+                                         else row['relatorio']['valor_centavos']))
+                                       or (value.get('valor_base_centavos') is None
+                                           and expense_review.get('valor_centavos') is not None
+                                           and expense_review.get('at') and value.get('at')
+                                           and expense_review['at'] > value['at']))
+            if changed_since_admission:
                 warnings.append(f'{row["id"]}: valor de trabalho mudou após a decisão de admissão; revise-a.')
             work_value = expense_review.get('valor_centavos')
             if work_value is None:
@@ -239,6 +349,7 @@ def build(process, states):
             'working': working, 'reported_limit': reported_limit,
             'preliminary_matched': preliminary_matched, 'preliminary_count': preliminary_count,
             'preliminary_clear': preliminary_clear, 'preliminary_clear_count': preliminary_clear_count,
+            'review_signals': dict(signal_counts),
             'confirmed_limit': confirmed_limit, 'limit_source': policy.get('fonte') or '',
             'reported_excess': None if reported_limit is None else max(0, line_sum - reported_limit),
             'admitted': admitted if admitted_ready else None,
@@ -261,6 +372,8 @@ def build(process, states):
     total_working = sum(m['working'] for m in by_month)
     total_preliminary = sum(m['preliminary_matched'] for m in by_month)
     total_preliminary_clear = sum(m['preliminary_clear'] for m in by_month)
+    overall_signal_counts = Counter(item['level'] for item in signals)
+    review_done = sum(item['reviewed'] for item in signals)
     reported_excess = sum(m['reported_excess'] or 0 for m in by_month)
     total_proposed = sum(m['proposed'] for m in by_month) if all(m['proposed'] is not None for m in by_month) else None
     conclusion = (states.get('conclusion:' + code) or {}).get('tipo') or 'diligencia'
@@ -286,14 +399,25 @@ def build(process, states):
                       else 'A soma proposta para pagamento permanece indeterminada até a confirmação dos limites e das admissões.')
     if conclusion == 'diligencia' or not payout_ready:
         pending = [item for item in issues if item['status'] == 'pendente']
-        examples = '; '.join(f'{item["id"]}: {item["title"]}' for item in pending[:3])
-        if len(pending) > 3:
-            examples += f'; e outros {len(pending) - 3} apontamentos no quadro'
-        requests = 'confirmar os limites individuais e fundamentar a admissão das despesas'
+        general_pending = [item for item in pending if item['kind'] == 'general']
+        expense_pending = [item for item in pending if item['kind'] == 'expense']
+        missing_limit = any(m['confirmed_limit'] is None or not m['limit_source'] for m in by_month)
+        selected_general = [item for item in general_pending
+                            if not (missing_limit and item['title'].startswith('Instrumento individual'))][:2]
+        examples = ([item['title'] for item in selected_general]
+                    + [f'{item["id"]}: {item["title"]}' for item in expense_pending[:2]])
+        requests = []
+        if missing_limit:
+            requests.append('juntar o instrumento individual e confirmar o limite aplicável a cada mês')
         if examples:
-            requests += f'; esclarecer {examples}'
-        conclusion_text = (f'Diante do exposto, a Comissão propõe diligência para {requests}. '
-                           'Após o saneamento, retornem os autos para análise conclusiva e apuração do valor mensal admitido. '
+            requests.append('esclarecer ' + '; '.join(examples)
+                            + ('; os demais apontamentos constam do quadro'
+                               if len(pending) > len(examples) else ''))
+        if not requests:
+            requests.append('sanear as pendências registradas no quadro')
+        conclusion_text = (f'Diante do exposto, a Comissão propõe diligência para {"; ".join(requests)}. '
+                           'O valor de pagamento permanece indeterminado até que a Comissão fundamente a admissão de cada despesa e aplique os limites mensais confirmados. '
+                           'Após o saneamento, retornem os autos para análise conclusiva. '
                            'Encaminhe-se para esclarecimento e complementação documental.')
     elif conclusion == 'com_ressalvas':
         conclusion_text = (f'Diante do exposto, a Comissão é favorável ao prosseguimento das rotinas para liquidação e pagamento, '
@@ -320,7 +444,10 @@ def build(process, states):
         warnings.append('Há parágrafos editados cuja base mudou; compare e atualize antes de finalizar.')
     return {'code': code, 'processo': sei_number(process), 'beneficiaria': beneficiary,
             'cnpj': cnpj, 'periodo': period, 'conclusion': conclusion,
-            'months': by_month, 'issues': issues, 'blocks': blocks,
+            'months': by_month, 'issues': issues, 'review_signals': signals,
+            'review_summary': {'counts': dict(overall_signal_counts), 'reviewed': review_done,
+                               'remaining': len(signals) - review_done},
+            'blocks': blocks,
             'totals': {'printed': total_printed, 'lines': total_lines,
                        'working': total_working, 'preliminary_matched': total_preliminary,
                        'preliminary_clear': total_preliminary_clear,
@@ -336,8 +463,10 @@ def _paragraph(text, style=None):
                    + '<w:r><w:t xml:space="preserve">' + escape(line) + '</w:t></w:r></w:p>' for line in lines)
 
 
-def _cell(text):
-    return '<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr>' + _paragraph(text) + '</w:tc>'
+def _cell(text, width, header=False):
+    style = 'TableHead' if header else 'TableText'
+    return (f'<w:tc><w:tcPr><w:tcW w:w="{width}" w:type="dxa"/></w:tcPr>'
+            + _paragraph(text, style) + '</w:tc>')
 
 
 def make_docx(snapshot):
@@ -345,18 +474,27 @@ def make_docx(snapshot):
     body += _paragraph('Processo SEI nº ' + snapshot['processo'], 'Subtitle')
     if snapshot['warnings']:
         body += _paragraph('Valor proposto ainda sujeito às pendências e aos fundamentos indicados no quadro de apontamentos.')
-    table = '<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>'
-    table += '<w:tr>' + ''.join(_cell(s) for s in ('Lançamento', 'Divergência ou dúvida', 'Efeito', 'Providência', 'Fonte')) + '</w:tr>'
+    widths = (1100, 2550, 1100, 2550, 2338)
+    table = ('<w:tbl><w:tblPr><w:tblW w:w="9638" w:type="dxa"/>'
+             '<w:tblLayout w:type="fixed"/><w:tblBorders>'
+             '<w:top w:val="single" w:sz="4"/><w:left w:val="single" w:sz="4"/>'
+             '<w:bottom w:val="single" w:sz="4"/><w:right w:val="single" w:sz="4"/>'
+             '<w:insideH w:val="single" w:sz="4"/><w:insideV w:val="single" w:sz="4"/>'
+             '</w:tblBorders><w:tblCellMar><w:top w:w="80" w:type="dxa"/>'
+             '<w:bottom w:w="80" w:type="dxa"/><w:left w:w="80" w:type="dxa"/>'
+             '<w:right w:w="80" w:type="dxa"/></w:tblCellMar></w:tblPr>')
+    table += '<w:tblGrid>' + ''.join(f'<w:gridCol w:w="{width}"/>' for width in widths) + '</w:tblGrid>'
+    table += '<w:tr>' + ''.join(_cell(s, width, True) for s, width in zip(
+        ('Item', 'Divergência ou dúvida', 'Efeito', 'Providência', 'Fonte'), widths)) + '</w:tr>'
     for issue in snapshot['issues']:
         effect = 'A determinar' if issue['amount_effect'] is None else reais(issue['amount_effect'])
         treatment = issue['next_step'] + (('\nTratamento registrado: ' + issue['resolution']) if issue['resolution'] else '')
-        table += '<w:tr>' + ''.join(_cell(s) for s in (
-            issue['id'] + ' · ' + issue['status'], issue['summary'], effect, treatment, issue['source'])) + '</w:tr>'
+        table += '<w:tr>' + ''.join(_cell(s, width) for s, width in zip((
+            issue['id'] + ' · ' + issue['status'], issue['summary'], effect, treatment, issue['source']), widths)) + '</w:tr>'
     table += '</w:tbl>'
     for block in snapshot['blocks']:
         body += _paragraph(block['title'], 'Heading1') + _paragraph(block['text'])
-        if block['key'] == 'findings':
-            body += _paragraph('Quadro de apontamentos', 'Heading1') + table
+    body += _paragraph('Anexo — quadro de apontamentos', 'Heading1') + table
     body += '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134"/></w:sectPr>'
     document = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
                 '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
@@ -366,6 +504,8 @@ def make_docx(snapshot):
               '<w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>'
               '<w:style w:type="paragraph" w:styleId="Subtitle"><w:name w:val="Subtitle"/><w:rPr><w:sz w:val="22"/></w:rPr></w:style>'
               '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="Heading 1"/><w:rPr><w:b/><w:sz w:val="25"/></w:rPr></w:style>'
+              '<w:style w:type="paragraph" w:styleId="TableText"><w:name w:val="Table Text"/><w:rPr><w:sz w:val="16"/></w:rPr></w:style>'
+              '<w:style w:type="paragraph" w:styleId="TableHead"><w:name w:val="Table Head"/><w:rPr><w:b/><w:sz w:val="16"/></w:rPr></w:style>'
               '</w:styles>')
     content_types = ('<?xml version="1.0" encoding="UTF-8"?>'
                      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
